@@ -350,8 +350,9 @@ Answer: `net.exe view`
 
 ## 🚩14. Local Admins
 Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+<br>
 <img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
-
+<br>
 **Task:** The attacker enumerated privileged local group membership.
 <br>
 **Question:** What group was queried?
@@ -368,28 +369,414 @@ Answer: `administrators`
 The attacker wasn't planning a short visit. Multiple mechanisms were deployed to ensure
 continued access - legitimate tools repurposed, tasks scheduled, accounts created. Map out
 every backdoor they left behind.
-## 🚩15. Planted Narrative / Cover Artifact
+## 🚩15. Remote Tool
+Reviewing the MDE process timeline shows execution of `AnyDesk.exe` shortly after reconnaissance activity. Defender also flags it as uncommon remote access software, indicating deployment of a legitimate remote administration tool for persistence and continued access.
 
-```kql
-DeviceFileEvents
-| where TimeGenerated > (todatetime('2025-10-09T13:01:29.7815532Z'))
-| where DeviceName == "gab-intern-vm"
-| order by TimeGenerated asc
-```
+<br>
+<img width="896" height="845" alt="image" src="https://github.com/user-attachments/assets/7b552acf-3ab5-4a71-ab03-0a068bd79f32" />
+<br>
 
-[IMAGE_PLACEHOLDER_COVER_ARTIFACT]
-
-**Question:** Identify the file name of the artifact left behind.
+**Task:** A legitimate remote administration tool was deployed for ongoing access.
+**Question:** What software was installed?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `SupportChat_log.lnk`
+Answer: `AnyDesk`
 
 </details>
 
 ---
+## 🚩16. Remote Tool Hash
+After confirming AnyDesk was deployed, I opened the file details within the Defender alert to fingerprint the binary. In the object details, the SHA256 hash is listed, which provides a unique identifier for the remote access tool used during the compromise.
+<br>
+<img width="392" height="718" alt="image" src="https://github.com/user-attachments/assets/92edb98a-2675-4637-952f-9b8064bfa467" />
+<br>
+**Task:** Identify the SHA256 hash of the remote access tool.
+<br>
+**Question:** What is the file hash?
 
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `f42b635d93720d1624c74121b83794d706d4d064bee027650698025703d20532`
+
+</details>
+
+---
+## 🚩17. Download Method
+To determine how AnyDesk was introduced, I reviewed the earliest execution events tied to its appearance in the process tree. The command line shows `cmd.exe /c certutil -urlcache -split -f https://download.anydesk.com/...`, indicating the use of a native Windows utility to retrieve the binary.
+<br>
+<img width="886" height="841" alt="image" src="https://github.com/user-attachments/assets/71cec2ee-e216-4e72-b44d-fd4d5a23c9f0" />
+<br>
+**Task:** The tool was downloaded using a native Windows binary.
+<br>
+**Question:** What binary/executable was used?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `certutil.exe`
+
+</details>
+
+---
+## 🚩18. Configuration Access
+After AnyDesk execution, I continued reviewing the process timeline to see what files were accessed next. A `cmd.exe /c type` command shows the attacker reading a configuration file shortly after installation.
+<br>
+<img width="935" height="831" alt="image" src="https://github.com/user-attachments/assets/7169062b-2ebc-466f-ac80-25ec2bb3a8fd" />
+<br>
+**Task:** After installation, a configuration file was accessed.
+<br>
+**Question:** What is the full path of this file?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `C:\Users\Sophie.Turner\AppData\Roaming\AnyDesk\system.conf`
+
+</details>
+
+---
+## 🚩19. Access Credentials
+To determine whether unattended access was configured, I reviewed the command lines associated with AnyDesk.exe. A `cmd.exe /c` command shows the `--set-password` flag being used, indicating the attacker configured remote access credentials.
+<br>
+<img width="949" height="855" alt="image" src="https://github.com/user-attachments/assets/93ce0bf0-0c2f-472a-aef4-2d82c276b51e" />
+<br>
+**Task:** Unattended access was configured for the remote tool.
+<br>
+**Question:** What password was set?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `intrud3r!`
+
+</details>
+
+---
+## 🚩20. Deployment Footprint
+Since AnyDesk was downloaded using certutil, I pivoted back to DeviceProcessEvents and queried for command lines containing both certutil and download.anydesk.com. This allowed me to identify all devices where the same download technique was used.
+
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where ProcessCommandLine has_all ("certutil", "download.anydesk.com")
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine
+```
+<br>
+<img width="1621" height="532" alt="image" src="https://github.com/user-attachments/assets/fcb5b7a6-3269-4b97-ab50-d59a9f8e0ff9" />
+<br>
+**Task:** The remote tool was installed across the environment.
+<br>
+**Question:** List all hostnames where it was deployed.
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `as-pc1, as-pc2, as-srv`
+
+</details>
+# SECTION 6: LATERAL MOVEMENT
+One host wasn't enough. The attacker moved through the environment, and not every method
+worked the first time. Track the path they took, the tools they tried, the accounts they used,
+and the order they moved.
+---
+## 🚩21. Failed Execution
+To identify failed remote execution attempts, I queried **DeviceProcessEvents** across the affected hosts for common lateral movement tools such as `psexec`, `wmic`, `winrs`, and `schtasks`. Reviewing the command lines shows attempts using both **PsExec** and **WMIC** for remote process creation.
+
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ProcessCommandLine has_any ("psexec", "wmic", "winrs", "sc \\\\", "Invoke-Command", "schtasks")
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine
+```
+<br>
+<img width="1624" height="591" alt="image" src="https://github.com/user-attachments/assets/a382e5fe-f46f-46a9-bce7-34577411b433" />
+<br>
+**Task:** The attacker attempted remote execution methods that failed.
+<br>
+**Question:** What two tools were tried?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `PsExec.exe, WMIC.exe`
+
+</details>
+
+---
+## 🚩22. Target Host
+After identifying remote execution attempts using PsExec and WMIC, I reviewed the command lines to determine the intended target. The WMIC commands clearly reference /node:AS-PC2, indicating the remote system specified for process creation.
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ProcessCommandLine has_any ("psexec", "wmic", "winrs", "sc \\\\", "Invoke-Command", "schtasks")
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine
+```
+<br>
+<img width="1624" height="591" alt="image" src="https://github.com/user-attachments/assets/e1be8706-b1a6-457e-b766-8a2f536f930b" />
+<br>
+**Task:** Remote execution was attempted against a specific system.
+<br>
+**Question:** What hostname was targeted in the failed attempts?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `as-pc2`
+
+</details>
+
+---
+## 🚩23. Successful Pivot
+After identifying failed WMIC and PsExec attempts, I shifted to **DeviceLogonEvents** to look for successful authentication activity. Filtering for `LogonSuccess` and reviewing the `LogonTyp` column shows **RemoteInteractive**, which aligns with successful RDP usage per Microsoft documentation.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
+| order by TimeGenerated desc
+```
+
+<br>
+<img width="1622" height="731" alt="image" src="https://github.com/user-attachments/assets/12e4df71-08b4-49e9-b7ae-6151a95ce01a" />
+<img width="862" height="752" alt="image" src="https://github.com/user-attachments/assets/c7507325-321c-41da-a323-71a14db9862f" />
+<br>
+**Task:** After failed attempts, a different method achieved lateral movement.
+<br>
+**Question:** What Windows executable was used?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `mstsc.exe`
+
+</details>
+
+---
+## 🚩24. Movement Path
+Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| where LogonType == "Unlock"
+| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
+| order by TimeGenerated asc
+```
+<br>
+ <img width="1287" height="505" alt="image" src="https://github.com/user-attachments/assets/dc9c4b7c-b3f6-4379-946f-ea21da19b2a0" />
+<br>
+**Task:** The attacker moved through the environment in a specific sequence
+<br>
+**Question:** What is the full lateral movement path?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `as-pc1 > as-pc2 > as-srv`
+
+</details>
+
+---
+## 🚩25. Compromised Account
+To identify which credentials were used for the successful pivot, I used **DeviceLogonEvents** filtered to `LogonSuccess` events and projected the `AccountName` field. The results show the successful authentication associated with lateral movement.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| where LogonType == "Unlock"
+| project TimeGenerated, AccountName, DeviceName, ActionType, LogonType, Protocol, RemoteIP
+```
+<br>
+<img width="1619" height="377" alt="image" src="https://github.com/user-attachments/assets/0cfd54e7-cbe7-403f-946a-d0e43be985b4" />
+<br>
+**Task:** A valid account was used for successful lateral movement
+<br>
+**Question:** What username authenticated successfully?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `david.mitchell`
+
+</details>
+---
+## 🚩26. Account Activation
+To determine how the attacker enabled additional access, I reviewed `net.exe` Mirosoft Documentation.
+<br>
+[Microsoft Net user Documentation](https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2012-r2-and-2012/cc771865(v=ws.11)#:~:text=Description-,/active%3A%7Bno%20%7C%20yes%7D,-Enables%20or%20disables)
+<br>
+<img width="867" height="135" alt="image" src="https://github.com/user-attachments/assets/0241756e-58b2-4883-b2e5-afd8e478e272" />
+<br>
+**Task:** A disabled account was enabled for further access.
+<br>
+**Question:** What net.exe parameter was used to activate the account?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `/active:yes`
+
+</details>
+---
+## 🚩27. Activation Context
+To identify who enabled the account, I queried **DeviceProcessEvents** for command lines containing `/active:yes` across the compromised hosts. Projecting the `AccountName` field reveals the user context under which the `net.exe user Administrator /active:yes` command was executed.
+
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where ProcessCommandLine has "/active:yes"
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| project TimeGenerated, AccountName, DeviceName, ProcessCommandLine
+```
+<br>
+<img width="1624" height="447" alt="image" src="https://github.com/user-attachments/assets/553029c7-2699-409d-9636-a8ab5f07115c" />
+<br>
+**Task:** The account activation was performed by a specific user.
+<br>
+**Question:** Who performed this action?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `david.mitchell`
+
+</details>
+---
+## 🚩14. Local Admins
+Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
+| order by TimeGenerated desc
+```
+<br>
+<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<br>
+**Task:** The attacker enumerated privileged local group membership.
+<br>
+**Question:** What group was queried?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `administrators`
+
+</details>
+---
+## 🚩14. Local Admins
+Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
+| order by TimeGenerated desc
+```
+<br>
+<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<br>
+**Task:** The attacker enumerated privileged local group membership.
+<br>
+**Question:** What group was queried?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `administrators`
+
+</details>
+---
+## 🚩14. Local Admins
+Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
+| order by TimeGenerated desc
+```
+<br>
+<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<br>
+**Task:** The attacker enumerated privileged local group membership.
+<br>
+**Question:** What group was queried?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `administrators`
+
+</details>
+---
+## 🚩14. Local Admins
+Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
+| order by TimeGenerated desc
+```
+<br>
+<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<br>
+**Task:** The attacker enumerated privileged local group membership.
+<br>
+**Question:** What group was queried?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `administrators`
+
+</details>
+---
+## 🚩14. Local Admins
+Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+```kql
+DeviceLogonEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "LogonSuccess"
+| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
+| order by TimeGenerated desc
+```
+<br>
+<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<br>
+**Task:** The attacker enumerated privileged local group membership.
+<br>
+**Question:** What group was queried?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `administrators`
+
+</details>
 ## Summary Table
 
 | Flag | Description | Value |

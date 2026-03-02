@@ -1,198 +1,195 @@
 # Threat Hunt Report: The Broker
+<img width="1244" height="311" alt="image" src="https://github.com/user-attachments/assets/6482ac03-0a09-47f0-9993-d4bc5a471178" />
 
-**Participant:** [REDACTED]  
-**Date:** [REDACTED]
+
+**Participant:** Vlad Zelenskiy  
+**Date:** February 2026
 
 ---
 
 ## Platforms and Languages Leveraged
+- EDR Platform: Microsoft Defender for Endpoint
 - Log Analytics Workspaces (Microsoft Azure)
 - Kusto Query Language (KQL)
+- [SancLogic Ops](https://sanclogic.com/sanclogic-ops)
+- [MITRE ATT&CK](https://attack.mitre.org/)
 
 ## Scenario
+<img width="740" height="493" alt="image" src="https://github.com/user-attachments/assets/f06500c0-f2c1-4d8e-8f99-17edade0fabd" />
+<br>
+SancLogics Labs has received a high-severity alert from Microsoft Defender for Endpoint indicating that a compromised user account is conducting hands-on-keyboard activity on device AS-PC1. The alert suggests that valid credentials may have been obtained and are now being used to manually execute commands, potentially enabling lateral movement within the environment. As a Security Analyst at SancLogics Labs, I am responsible for investigating this incident, determining the scope of the compromise, identifying affected systems and accounts, and assessing whether the attacker established persistence or accessed sensitive resources.
 
-October is known to be spooky, and this year is no different. In the first half of the month, an unfamiliar script surfaced in a user's Downloads directory. Not long after, multiple machines were found to start spawning processes originating from the Downloads folder as well. The machines were found to share the same types of files, naming patterns, and similar executables. The goal is to identify what the actor has compromised and to eradicate any persistence they may have established.
+
+
 
 ### High-Level IoC Discovery Plan
-- Check `DeviceProcessEvents` to identify the suspicious machine, recon attempts in network and privileges.
-- Check `DeviceFileEvents` to identify any security posture changes, consolidation of artifacts, and any planted narratives.
-- Check `DeviceNetworkEvents` for any signs of outgoing connections and transfer attempts.
+- Check `DeviceProcessEvents` to identify interactive logon activity, suspicious command execution, credential abuse, and evidence of lateral movement originating from AS-PC1.
+- Check `DeviceNetworkEvents` to detect outbound connections, internal reconnaissance, SMB/RDP activity, or potential command-and-control communication.
+- Check `DeviceFileEvents` for injected tools, staging artifacts, privilege escalation utilities, or evidence of persistence mechanisms.
 
 ---
 
 ## Starting Point
 
-We need to first find our starting point. Knowing that this issue started in the first half of October, we can establish a timeframe. Also, we can use `DeviceProcessEvents` to investigate what happened in the Downloads folder. In order to catch everything, we need to use `matches regex @"(?i)(..|..|..).*\.exe"` to see all regular expressions as a string, ignoring case sensitivity and ending in an `.exe`.
+We need to establish the initial access vector that led to the hands-on-keyboard activity on **AS-PC1**. Based on the alert details, the compromise occurred between January 14 and January 16, 2026. This timeframe will anchor our investigation.
+The Microsoft Defender alert identifies AS-PC1 as the affected device and indicates that the compromised account is Sophie.Turner.
 
 ```kql
-DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-16))
-| where ProcessCommandLine contains "Download"
-| where ProcessCommandLine matches regex @"(?i)(desk|help|support|tool).*\.exe"
+DeviceNetworkEvents
+| where TimeGenerated between (datetime(2026-01-14 00:00:00) .. datetime(2026-01-16 00:00:00))
+| where InitiatingProcessAccountName == "sophie.turner"
+| where DeviceName =~ "as-pc1"
 ```
+---
 
-[IMAGE_PLACEHOLDER_STARTING_POINT]
+# SECTION 1: INITIAL ACCESS
+The attacker needed a way in. Something landed on an endpoint - whether it was clicked, downloaded, or delivered - and kicked off the entire compromise. Trace the infection back to its origin. Identify what arrived, how it executed, and what it spawned.
+## 🚩1. Initial Vector
+To begin the investigation, I needed to determine what originally triggered the compromise on AS-PC1. Since the alert indicated hands-on-keyboard activity tied to Sophie.Turner on January 14, 2026, I reviewed the Microsoft Defender for Endpoint timeline to establish a chronological sequence of events.
+<br>
+<img width="572" height="807" alt="image" src="https://github.com/user-attachments/assets/e7abf1a1-5710-42b0-ae86-80c3fdbf6668" />
+<br>
+I identified a suspicious process execution event occurring immediately before the PowerShell activity. The event showed that a PowerShell interpreter was launched by a file named **Daniel_Richardson_CV.pdf.exe**. The file immediately stood out because it used a double extension **(.pdf.exe)**, a common technique to disguise an executable as a document, and it directly spawned **powershell.exe**, which means it acted as the initial execution vector.
 
-**Question:** Identify the most suspicious machine based on the given conditions
+**Task:** Identify the file that started the infection chain.
+<br>
+**Question:** What is the filename?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `gab-intern-vm`
+Answer: `Daniel_Richardson_CV.pdf.exe`
 
 </details>
 
 ---
 
-## 1. Initial Execution Detection
+##🚩2. Payload Hash
+After identifying **Daniel_Richardson_CV.pdf.exe** as the initial execution vector, the next step was to uniquely fingerprint the payload. Establishing a cryptographic hash allows us to track the file consistently across telemetry. Using the Microsoft Defender for Endpoint timeline, I navigated to the file’s Object details and collect the payload SHA256 hash.
+<br>
+<img width="606" height="712" alt="image" src="https://github.com/user-attachments/assets/20fb9870-1173-44ab-b7a7-9f4baa4b0dd3" />
+<br>
 
-```kql
-DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-16))
-| where DeviceName == "gab-intern-vm"
-| where ProcessCommandLine contains "powershell"
-| project TimeGenerated, DeviceName, ProcessCommandLine
-| order by TimeGenerated asc
-```
-
-[IMAGE_PLACEHOLDER_INITIAL_EXECUTION]
-
-**Question:** What was the first CLI parameter name used during the execution of the suspicious program?
+**Task:** Identify the SHA256 hash of the initial payload.
+<br>
+**Question:** What is the file hash?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `-ExecutionPolicy`
+Answer: `48b97fd91946e81e3e7742b3554585360551551cbf9398e1f34f4bc4eac3a6b5`
 
 </details>
 
 ---
 
-## 2. Defense Disabling
+## 🚩3. User Interaction
+After identifying the malicious payload, the next step was to determine how it was actually executed. Using the Microsoft Defender timeline, I examined the process event entities event which revealed the full parent-child relationship with **explorer.exe**.
+<br>
+<img width="513" height="761" alt="image" src="https://github.com/user-attachments/assets/baec6e2f-5758-4f00-a809-886067cdbe0f" />
+<br>
 
-```kql
-DeviceFileEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where FileName matches regex @"(?i)(tamper)"
-| project TimeGenerated, DeviceName, ActionType, FileName, FolderPath
-| order by TimeGenerated asc
-```
-
-[IMAGE_PLACEHOLDER_DEFENSE_DISABLING]
-
-**Question:** What was the name of the file related to this exploit?
+**Task:** Determine how the payload was initially launched.
+<br>
+**Question:** What parent process indicates the method of execution?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `DefenderTamperArtifact.lnk`
+Answer: `explorer.exe`
 
 </details>
 
 ---
 
-## 3. Quick Data Probe
+## 🚩4. Suspicious Child Process
+The MDE timeline showed the payload spawning processes, but it was not detailed enough to isolate a single legitimate Windows child process. I pivoted to Advanced Hunting and queried **DeviceProcessEvents** on AS-PC1, filtering where the initiating process was Daniel_Richardson_CV.pdf.exe. The results were mostly cmd.exe and powershell.exe, but one legitimate Windows process was **"spawned"**.
 
 ```kql
 DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where FileName contains "powershell"
-| where ProcessCommandLine contains "clip"
-| project TimeGenerated, DeviceName, ActionType, FileName, FolderPath, ProcessCommandLine
-| order by TimeGenerated asc
+| where DeviceName =~ "as-pc1"
+| where TimeGenerated between (datetime(2026-01-15 03:50:00) .. datetime(2026-01-15 05:15:00))
+| where InitiatingProcessFileName =~ "Daniel_Richardson_CV.pdf.exe"
+| project TimeGenerated, InitiatingProcessFileName, FileName, ProcessCommandLine
 ```
-
-[IMAGE_PLACEHOLDER_CLIPBOARD]
-
-**Question:** Provide the command value tied to this particular exploit.
+<br>
+<img width="1306" height="335" alt="image" src="https://github.com/user-attachments/assets/406051f0-8276-4f80-ac14-2e99db6aba24" />
+<br>
+**Task:** The payload created a child process for further activity.
+<br>
+**Question:** What legitimate Windows process was spawned?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `"powershell.exe" -NoProfile -Sta -Command "try { Get-Clipboard | Out-Null } catch { }"`
+Answer: `notepad.exe`
 
 </details>
 
 ---
 
-## 4. Host Context Recon
-
+## 🚩5. Process Arguments
+After confirming the payload spawned `notepad.exe`, I used the same Advanced Hunting query results and focused on the **ProcessCommandLine** field to capture exactly how it was executed. Projecting ProcessCommandLine shows the full argument string as recorded in telemetry.
 ```kql
 DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where ProcessCommandLine contains "qwi"
-| project TimeGenerated, DeviceName, ActionType, FileName, FolderPath, ProcessCommandLine
-| order by TimeGenerated asc
+| where DeviceName =~ "as-pc1"
+| where TimeGenerated between (datetime(2026-01-15 03:50:00) .. datetime(2026-01-15 05:15:00))
+| where InitiatingProcessFileName =~ "Daniel_Richardson_CV.pdf.exe"
+| project TimeGenerated, InitiatingProcessFileName, FileName, ProcessCommandLine
 ```
+<br>
+<img width="1304" height="333" alt="image" src="https://github.com/user-attachments/assets/6378403c-e815-4d8a-860d-9734af53638b" />
+<br>
 
-[IMAGE_PLACEHOLDER_RECON]
-
-**Question:** Point out when the last recon attempt was.
+**Task:** The spawned process executed with unusual arguments.
+<br>
+**Question:** What was the full command line?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `2025-10-09T12:51:44.3425653Z`
+Answer: `notepad.exe ""`
 
 </details>
 
 ---
 
-## 5. Storage Surface Mapping
+# SECTION 2:  COMMAND & CONTROL
+With a foothold established, the attacker needed to talk back to their infrastructure. Outbound connections were made to adversary-controlled domains. Identify how the attacker maintained communication and where their infrastructure lives.
+## 🚩6. C2 Domain
+After confirming execution activity, the next step was to determine whether the payload established outbound communication. I pivoted to DeviceNetworkEvents on AS-PC1 and filtered for connections initiated by Daniel_Richardson_CV.pdf.exe and related processes within the compromise timeframe.
+
+Reviewing the RemoteUrl field revealed repeated outbound connections to a consistent external domain over ports 80 and 443, indicating command and control activity.
 
 ```kql
-DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where tolower(ProcessCommandLine) has_any ("net share", "net view", "dir /s", "Get-Volume", "Get-SmbShare", "wmic", "fsutil fsinfo drives", "Get-CimInstance -ClassName Win32_LogicalDisk")
-| project TimeGenerated, DeviceName, AccountName, FolderPath, ProcessCommandLine
+DeviceNetworkEvents
+| where DeviceName =~ "as-pc1"
+| where TimeGenerated between (datetime(2026-01-14 00:00:00) .. datetime(2026-01-16 00:00:00))
+| where ActionType in ("ConnectionSuccess","ConnectSuccess","HttpConnectionInspected")
+| where InitiatingProcessFileName in~ ("Daniel_Richardson_CV.pdf.exe","notepad. exe","powershell.exe","cmd. exe","AnyDesk. exe")
+| project TimeGenerated, InitiatingProcessFileName, InitiatingProcessCommandLine,
+RemoteUrl, RemoteIP, RemotePort, Protocol
 | order by TimeGenerated asc
 ```
+<img width="1305" height="684" alt="image" src="https://github.com/user-attachments/assets/15d36c68-4e46-4489-86e3-59b0e4e872e5" />
 
-[IMAGE_PLACEHOLDER_STORAGE]
-
-**Question:** Provide the 2nd command tied to this activity.
-
-<details>
-<summary>Click to see answer</summary>
-
-Answer: `"cmd.exe" /c wmic logicaldisk get name,freespace,size`
-
-</details>
-
----
-
-## 6. Connectivity and Name Resolution Check
-
-```kql
-DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where ProcessCommandLine has_any ("ping", "nslookup", "curl", "Test-NetConnection", "tracert")
-| where FileName contains "powershell" or FileName contains "cmd"
-| where ProcessCommandLine has_any ("ping", "tracert", "nslookup")
-| where IsProcessRemoteSession == "true"
-| project TimeGenerated, DeviceName, FileName, FolderPath, ProcessCommandLine, InitiatingProcessParentFileName, IsProcessRemoteSession
-| order by TimeGenerated asc
-```
 
 [IMAGE_PLACEHOLDER_CONNECTIVITY]
 
-**Question:** Provide the File Name of the initiating parent process.
+**Task:** The payload established outbound connections.
+<br>
+**Question:** What domain was used for command and control?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `RuntimeBroker.exe`
+Answer: `cdn.cloud-endpoint.net`
 
 </details>
 
 ---
 
-## 7. Interactive Session Discovery
+## 🚩7. Staging Infrastructure
 
 ```kql
 DeviceProcessEvents

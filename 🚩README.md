@@ -600,17 +600,18 @@ DeviceLogonEvents
 <br>
 <img width="1619" height="377" alt="image" src="https://github.com/user-attachments/assets/0cfd54e7-cbe7-403f-946a-d0e43be985b4" />
 <br>
-**Task:** A valid account was used for successful lateral movement
+**Task:** A valid account was used for successful lateral movement.
 <br>
 **Question:** What username authenticated successfully?
-
 <details>
+ 
 <summary>Click to see answer</summary>
 
 Answer: `david.mitchell`
 
 </details>
 ---
+
 ## 🚩26. Account Activation
 To determine how the attacker enabled additional access, I reviewed `net.exe` Mirosoft Documentation.
 <br>
@@ -628,6 +629,7 @@ To determine how the attacker enabled additional access, I reviewed `net.exe` Mi
 Answer: `/active:yes`
 
 </details>
+
 ---
 ## 🚩27. Activation Context
 To identify who enabled the account, I queried **DeviceProcessEvents** for command lines containing `/active:yes` across the compromised hosts. Projecting the `AccountName` field reveals the user context under which the `net.exe user Administrator /active:yes` command was executed.
@@ -653,152 +655,356 @@ Answer: `david.mitchell`
 
 </details>
 ---
-## 🚩14. Local Admins
-Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+# SECTION 7: PERSISTENCE - SCHEDULED TASK
+The attacker planted additional persistence beyond the remote tool. Scheduled tasks and
+new accounts extend their access even if one mechanism is discovered and removed.
+
+## 🚩28. Scheduled Persistence
+To identify persistence, I queried **DeviceProcessEvents** for `schtasks.exe` executions across the compromised hosts. The command line shows `/create /tn MicrosoftEdgeUpdateCheck`, confirming a scheduled task was created to maintain access.
 
 ```kql
-DeviceLogonEvents
-| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-14) .. datetime(2026-01-17))
+| where FileName == "schtasks.exe"
 | where DeviceName in ("as-pc1","as-pc2","as-srv")
-| where ActionType == "LogonSuccess"
-| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
-| order by TimeGenerated desc
+| project InitiatingProcessCommandLine, ProcessCommandLine
 ```
 <br>
-<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<img width="1624" height="374" alt="image" src="https://github.com/user-attachments/assets/648c80a3-efb6-4f3e-a02b-6aec9cd26f7a" />
 <br>
-**Task:** The attacker enumerated privileged local group membership.
+**Task:** A scheduled task was created for persistence.
 <br>
-**Question:** What group was queried?
+**Question:** What is the task name?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `administrators`
+Answer: `MicrosoftEdgeUpdateCheck`
 
 </details>
 ---
-## 🚩14. Local Admins
-Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+## 🚩29. Renamed Binary
+After identifying the scheduled task, I reviewed the same `schtasks.exe /create` command to see what binary it was configured to run. The `/tr` argument points to `C:\Users\Public\RuntimeBroker.exe`, which is a suspicious location for a legimate Windows executable and suggests the payload was renamed to blend in.
 
 ```kql
-DeviceLogonEvents
-| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-14) .. datetime(2026-01-17))
+| where FileName == "schtasks.exe"
 | where DeviceName in ("as-pc1","as-pc2","as-srv")
-| where ActionType == "LogonSuccess"
-| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
-| order by TimeGenerated desc
+| project InitiatingProcessCommandLine, ProcessCommandLine
 ```
 <br>
-<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<img width="1624" height="374" alt="image" src="https://github.com/user-attachments/assets/4ce63ff9-4c34-40e5-8956-8ef29cdbeb88" />
 <br>
-**Task:** The attacker enumerated privileged local group membership.
+**Task:** The persistence payload was renamed to avoid detection.
 <br>
-**Question:** What group was queried?
+**Question:** What filename was used?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `administrators`
+Answer: `RuntimeBroker.exe`
 
 </details>
 ---
-## 🚩14. Local Admins
-Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+## 🚩30. Persistence Hash
+After identifying RuntimeBroker.exe as the scheduled task payload, I pivoted to DeviceFileEvents to fingerprint the file. Filtering on FileName == "RuntimeBroker.exe" and projecting SHA256 reveals the hash, which matches a previously identified payload in the investigation.
 
 ```kql
-DeviceLogonEvents
+DeviceFileEvents
 | where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
-| where DeviceName in ("as-pc1","as-pc2","as-srv")
-| where ActionType == "LogonSuccess"
-| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
-| order by TimeGenerated desc
+| where FileName =~ "RuntimeBroker.exe"
+| project TimeGenerated, DeviceName, FolderPath, FileName, SHA256
 ```
 <br>
-<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<img width="1625" height="471" alt="image" src="https://github.com/user-attachments/assets/3c233069-a0d6-4b4f-9720-f0d213ab061f" />
+
 <br>
-**Task:** The attacker enumerated privileged local group membership.
+**Task:** The persistence payload shares a hash with another file in the investigation.
 <br>
-**Question:** What group was queried?
+**Question:** What is the SHA256 hash?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `administrators`
+Answer: `48b97fd91946e81e3e7742b3554585360551551cbf9398e1f34f4bc4eac3a6b5`
 
 </details>
 ---
-## 🚩14. Local Admins
-Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+## 🚩31. Backdoor Account
+Reviewing DeviceProcessEvents for `net.exe` executions containing the `/add` parameter reveals the creation of a new local account.
 
 ```kql
-DeviceLogonEvents
+DeviceProcessEvents
 | where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
-| where DeviceName in ("as-pc1","as-pc2","as-srv")
-| where ActionType == "LogonSuccess"
-| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
-| order by TimeGenerated desc
+| where FileName =~ "net.exe"
+| where ProcessCommandLine has "/add"
+| project TimeGenerated, AccountName, DeviceName, ProcessCommandLine
 ```
 <br>
-<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<img width="1280" height="395" alt="image" src="https://github.com/user-attachments/assets/3dde2a7f-207d-42e5-842c-501aad740a1d" />
 <br>
-**Task:** The attacker enumerated privileged local group membership.
+**Task:** A new local account was created for future access.
 <br>
-**Question:** What group was queried?
+**Question:** What is the username?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `administrators`
+Answer: `svc_backup`
 
 </details>
 ---
-## 🚩14. Local Admins
-Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+
+# SECTION 8: DATA ACCESS
+The attacker found what they came for. Sensitive data was located, accessed, and staged for
+extraction. Identify what was taken, where it was accessed from, and how it was packaged.
+
+## 🚩32. Sensitive Document
+To determine whether sensitive data was accessed after lateral movement, I reviewed **DeviceProcessEvents** for activity referencing the file server share (`\\as-srv\`).
 
 ```kql
-DeviceLogonEvents
+DeviceProcessEvents
 | where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
-| where DeviceName in ("as-pc1","as-pc2","as-srv")
-| where ActionType == "LogonSuccess"
-| project TimeGenerated, DeviceName, ActionType, AccountName, LogonType, Protocol, RemoteIP
-| order by TimeGenerated desc
+| where DeviceName in ("as-pc1","as-pc2")
+| where AccountName in ("david.mitchell","svc_backup")
+| where ProcessCommandLine has "\\\\as-srv\\"
+| project TimeGenerated, DeviceName, AccountName, FileName, ProcessCommandLine
+| order by TimeGenerated asc
 ```
 <br>
-<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+<img width="1626" height="395" alt="image" src="https://github.com/user-attachments/assets/51ae51d9-112d-4503-815c-c267039fb4ae" />
 <br>
-**Task:** The attacker enumerated privileged local group membership.
+**Task:** A sensitive document was accessed on the file server.
 <br>
-**Question:** What group was queried?
+**Question:** What is the filename?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `administrators`
+Answer: `BACS_Payments_Dec2025.ods`
 
 </details>
-## Summary Table
+---
 
-| Flag | Description | Value |
-|------|-------------|-------|
-| Start | Suspicious Machine | gab-intern-vm |
-| 1 | 1st CLI parameter used in execution | -ExecutionPolicy |
-| 2 | File related to exploit | DefenderTamperArtifact.lnk |
-| 3 | Exploit command value | "powershell.exe" -NoProfile -Sta -Command "try { Get-Clipboard | Out-Null } catch { }" |
-| 4 | Last recon attempt | 2025-10-09T12:51:44.3425653Z |
-| 5 | 2nd command tied to mapping | "cmd.exe" /c wmic logicaldisk get name,freespace,size |
-| 6 | Initiating parent process file name | RuntimeBroker.exe |
-| 7 | Initiating process unique ID | 2533274790397065 |
-| 8 | Process inventory | tasklist.exe |
-| 9 | 1st attempt timestamp | 2025-10-09T12:52:14.3135459Z |
-| 10 | 1st outbound destination | www.msftconnecttest.com |
-| 11 | Artifact 1st full folder path | C:\Users\Public\ReconArtifacts.zip |
-| 12 | Unusual outbound IP | 100.29.147.161 |
-| 13 | Task name value | SupportToolUpdater |
-| 14 | Registry value name | RemoteAssistUpdater |
-| 15 | Artifact left behind | SupportChat_log.lnk |
+The attacker found what they came for. Sensitive data was located, accessed, and staged for
+extraction. Identify what was taken, where it was accessed from, and how it was packaged.
+
+## 🚩33. Modification Evidence
+For `.ods` files, LibreOffice creates a lock file when the document is opened for editing. I used Google and AI to help me find the file artifact syntax.
+<br>
+<img width="1395" height="503" alt="image" src="https://github.com/user-attachments/assets/737fe77b-0528-4c37-b477-8067542aa3c9" />
+<br>
+**Task:** The document was opened for editing, not just viewing.
+<br>
+**Question:** What file artifact proves this?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `.~lock.BACS_Payments_Dec2025.ods#`
+
+</details>
 
 ---
 
-**Report Completed By:** [REDACTED]  
-**Status:** All 15 flags investigated and confirmed
+## 🚩34. Access Origin
+By querying **DeviceProcessEvents** and filtering on `ProcessCommandLine` containing `BACS_Payments_Dec2025.ods`, we can identify the host that opened the document. Projecting the DeviceName column shows the access originated from `as-pc2`.
+
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ProcessCommandLine has_any ("BACS_Payments_Dec2025.ods")
+| project TimeGenerated, DeviceName, ProcessCommandLine
+| order by TimeGenerated asc
+```
+<br>
+<img width="1626" height="395" alt="image" src="https://github.com/user-attachments/assets/51ae51d9-112d-4503-815c-c267039fb4ae" />
+<br>
+**Task:** The document was accessed from a specific workstation.
+<br>
+**Question:** Which hostname accessed the file?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `as-pc2`
+
+</details>
+
+---
+
+
+## 🚩35. Exfil Archive
+To determine whether data was staged for exfiltration, I searched **DeviceProcessEvents** for common archive utilities and compression commands such as `zip`, `7z`, `rar`, `tar`, and `Compress-Archive`.).
+
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ProcessCommandLine has_any ("zip","7z","rar","tar","Compress-Archive")
+| project TimeGenerated, DeviceName, ProcessCommandLine
+| order by TimeGenerated asc
+```
+<br>
+<img width="1617" height="499" alt="image" src="https://github.com/user-attachments/assets/311dc18a-5c07-47a4-837c-8d896503401d" />
+
+<br>
+**Task:** Data was archived before potential exfiltration
+<br>
+**Question:** What is the archive filename?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `Shares.7z`
+
+</details>
+
+---
+
+
+## 🚩36. Archive Hash
+After identifying **Shares.7z** as the staged archive, I pivoted to **DeviceFileEvents** and filtered on `FileName == "Shares.7z"` to retrieve its SHA256 cryptographic fingerprint.
+
+```kql
+DeviceFileEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where FileName has "Shares"
+| project TimeGenerated, DeviceName, FileName, SHA256
+| order by TimeGenerated asc
+```
+<br>
+<img width="1628" height="444" alt="image" src="https://github.com/user-attachments/assets/0c4c1ae7-3d16-49b5-8443-d088c958fabc" />
+<br>
+**Task:** Identify the SHA256 hash of the staged archive.
+<br>
+**Question:** What is the file hash?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `6886c0a2e59792e69df94d2cf6ae62c2364fda50a23ab44317548895020ab048`
+
+</details>
+
+---
+
+# SECTION 9: ANTI-FORENSICS & MEMORY
+Before leaving, the attacker tried to cover their tracks. Logs were cleared, binaries renamed,
+and tools loaded in ways designed to avoid detection. Identify the anti-forensics techniques
+and what evidence survived.
+
+## 🚩37. Log Clearing
+I switched back to the MDE timeline to look for evidence of defense evasion. I specifically searched for wevtutil.exe activity because I know that wevtutil is the built-in Windows Event Log Utility. It is commonly abused by attackers to clear event logs using the cl (clear log) parameter.
+
+<br>
+<img width="648" height="244" alt="image" src="https://github.com/user-attachments/assets/b9f66b2b-1e85-4b46-a4a1-da312e23ef51" />
+<img width="627" height="236" alt="image" src="https://github.com/user-attachments/assets/b2883d5b-0988-4179-924a-51a99f132839" />
+<br>
+**Task:** The attacker cleared logs to cover their tracks.
+<br>
+**Question:** Name any two logs that were cleared.
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `System, Application`
+
+</details>
+
+---
+
+## 🚩38. Reflective Loading
+To identify evidence of reflective code loading, I queried the **DeviceEvents** table and summarized events by `ActionType` across the compromised hosts (`as-pc1`, `as-pc2`, `as-srv`) within the investigation timeframe. Reflective loading typically involves injecting or loading a module directly into memory without writing it to disk. The relevant ActionType observed in the results was: `ClrUnbackedModuleLoaded`.
+
+```kql
+DeviceEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| summarize Events=count() by ActionType
+| order by Events asc
+```
+<br>
+<img width="1622" height="424" alt="image" src="https://github.com/user-attachments/assets/201ee216-7e69-4cff-bf1a-d8f32ed3e2da" />
+<br>
+**Task:** Evidence of reflective code loading was captured.
+<br>
+**Question:** What ActionType recorded this activity?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `ClrUnbackedModuleLoaded`
+
+</details>
+
+---
+
+## 🚩39. Memory Tool
+After identifying `ClrUnbackedModuleLoaded` as the ActionType associated with reflective loading, I refined the query to isolate those specific events:
+- Table: **DeviceEvents**
+- Filter: `ActionType == "ClrUnbackedModuleLoaded"`
+- Scope: Compromised hosts (`as-pc1`, `as-pc2`, `as-srv`)
+- Output: Included the `AdditionalFields` column
+**SharpChrome** is a well-known credential theft tool designed to extract saved credentials from Chromium-based browsers. It is commonly executed in memory to evade disk-based detection, which aligns with the `ClrUnbackedModuleLoaded`. telemetry.
+
+```kql
+DeviceEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName in ("as-pc1","as-pc2","as-srv")
+| where ActionType == "ClrUnbackedModuleLoaded"
+| project TimeGenerated, ActionType, DeviceName, AdditionalFields
+```
+<br>
+<img width="1626" height="428" alt="image" src="https://github.com/user-attachments/assets/9f01ff21-5a59-4943-b116-5158cac473d1" />
+/>
+<br>
+**Task:** A credential theft tool was loaded directly into memory.
+<br>
+**Question:** What tool was used?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `SharpChrome`
+
+</details>
+
+---
+
+## 🚩40. Host Process
+Now putting all the puzzle pieces togehter, to identify which legitimate process was hosting the in-memory credential theft tool, I filtered **DeviceEvents** using:
+- ActionType == "ClrUnbackedModuleLoaded"
+- AdditionalFields has "SharpChrome"
+Then I projected the `InitiatingProcessFileName` column.
+
+```kql
+DeviceEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+|where DeviceName in ("as-pc1","as-pc2","as-srv")
+|where ActionType == "ClrUnbackedModuleLoaded"
+|where AdditionalFields has "SharpChrome"
+|project TimeGenerated, DeviceName, InitiatingProcessFileName, InitiatingProcessCommandLine, InitiatingProcessParentFileName, AdditionalFields
+```
+<br>
+<img width="1628" height="385" alt="image" src="https://github.com/user-attachments/assets/d159ffc0-4eb4-465f-b494-8d544b4dcf66" />
+<br>
+**Task:** The credential theft tool was injected into a legitimate process.
+<br>
+**Question:** What process was hosting the malicious assembly?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `notepad`
+
+</details>
+---
+
+**Report Completed By:** Vlad Zelenskiy
+**Status:** All 40 flags investigated and confirmed

@@ -64,7 +64,7 @@ Answer: `Daniel_Richardson_CV.pdf.exe`
 
 ---
 
-##🚩2. Payload Hash
+## 🚩2. Payload Hash
 After identifying **Daniel_Richardson_CV.pdf.exe** as the initial execution vector, the next step was to uniquely fingerprint the payload. Establishing a cryptographic hash allows us to track the file consistently across telemetry. Using the Microsoft Defender for Endpoint timeline, I navigated to the file’s Object details and collect the payload SHA256 hash.
 <br>
 <img width="606" height="712" alt="image" src="https://github.com/user-attachments/assets/20fb9870-1173-44ab-b7a7-9f4baa4b0dd3" />
@@ -155,11 +155,9 @@ Answer: `notepad.exe ""`
 ---
 
 # SECTION 2:  COMMAND & CONTROL
-With a foothold established, the attacker needed to talk back to their infrastructure. Outbound connections were made to adversary-controlled domains. Identify how the attacker maintained communication and where their infrastructure lives.
+With a foothold established, the attacker needed to talk back to their infrastructure. Outbound connections were made to a command and control server. Identify how the attacker maintained communication and where their infrastructure lives.
 ## 🚩6. C2 Domain
-After confirming execution activity, the next step was to determine whether the payload established outbound communication. I pivoted to DeviceNetworkEvents on AS-PC1 and filtered for connections initiated by Daniel_Richardson_CV.pdf.exe and related processes within the compromise timeframe.
-
-Reviewing the RemoteUrl field revealed repeated outbound connections to a consistent external domain over ports 80 and 443, indicating command and control activity.
+After confirming execution activity, the next step was to determine whether the payload established outbound communication. I pivoted to DeviceNetworkEvents on AS-PC1 and filtered for connections initiated by Daniel_Richardson_CV.pdf.exe and related processes within the compromise timeframe. Reviewing the RemoteUrl field revealed repeated outbound connections to a consistent external domain over ports 80 and 443, indicating command and control activity.
 
 ```kql
 DeviceNetworkEvents
@@ -172,9 +170,6 @@ RemoteUrl, RemoteIP, RemotePort, Protocol
 | order by TimeGenerated asc
 ```
 <img width="1305" height="684" alt="image" src="https://github.com/user-attachments/assets/15d36c68-4e46-4489-86e3-59b0e4e872e5" />
-
-
-[IMAGE_PLACEHOLDER_CONNECTIVITY]
 
 **Task:** The payload established outbound connections.
 <br>
@@ -189,180 +184,191 @@ Answer: `cdn.cloud-endpoint.net`
 
 ---
 
-## 🚩7. Staging Infrastructure
-
-```kql
-DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where ProcessCommandLine contains ("qwi")
-| project TimeGenerated, DeviceName, FileName, FolderPath, ProcessCommandLine, InitiatingProcessUniqueId
-```
-
-[IMAGE_PLACEHOLDER_SESSION_DISCOVERY]
-
-**Question:** What is the unique ID of the initiating process?
-
-<details>
-<summary>Click to see answer</summary>
-
-Answer: `2533274790397065`
-
-</details>
-
----
-
-## 8. Runtime Application Inventory
-
-**Question:** Provide the file name of the process that best demonstrates a runtime process enumeration event on the target host.
-
-<details>
-<summary>Click to see answer</summary>
-
-Answer: `tasklist.exe`
-
-</details>
-
----
-
-## 9. Privilege Surface Check
-
-```kql
-DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where ProcessCommandLine contains "whoami"
-| project TimeGenerated, DeviceName, FileName, FolderPath, ProcessCommandLine
-| order by TimeGenerated asc
-| take 1
-```
-
-[IMAGE_PLACEHOLDER_PRIVILEGE]
-
-**Question:** Identify the timestamp of the very first attempt.
-
-<details>
-<summary>Click to see answer</summary>
-
-Answer: `2025-10-09T12:52:14.3135459Z`
-
-</details>
-
----
-
-## 10. Proof of Access and Egress Validation
-
+## 🚩7. C2 Process
+After identifying the C2 domain, the next step was to determine which process initiated the outbound communication. Using the same DeviceNetworkEvents query, I projected the `InitiatingProcessCommandLine` field to isolate the originating process.
 ```kql
 DeviceNetworkEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where InitiatingProcessParentFileName contains "runtimebroker.exe"
-| project TimeGenerated, ActionType, DeviceName, InitiatingProcessFileName, RemoteUrl
+| where DeviceName =~ "as-pc1"
+| where TimeGenerated between (datetime(2026-01-14 00:00:00) .. datetime(2026-01-16 00:00:00))
+| where ActionType in ("ConnectionSuccess","ConnectSuccess","HttpConnectionInspected")
+| where InitiatingProcessFileName in~ ("Daniel_Richardson_CV.pdf.exe","notepad. exe","powershell.exe","cmd. exe","AnyDesk. exe")
+| project TimeGenerated, InitiatingProcessFileName, InitiatingProcessCommandLine,
+RemoteUrl, RemoteIP, RemotePort, Protocol
 | order by TimeGenerated asc
 ```
+<img width="1618" height="542" alt="image" src="https://github.com/user-attachments/assets/9ea02c5c-c032-43bf-814d-8edb4fdb2176" />
 
-[IMAGE_PLACEHOLDER_EGRESS]
-
-**Question:** Which outbound destination was contacted first?
+**Task:** Identify the process responsible for C2 traffic.
+<br>
+**Question:** What process initiated the outbound connections?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `www.msftconnecttest.com`
+Answer: `"Daniel_Richardson_CV.pdf.exe"`
 
 </details>
 
 ---
 
-## 11. Bundling and Staging Artifacts
+## 🚩8. Staging Infrastructure
+Since the incident involved lateral movement, I widened scope beyond AS-PC1 to see where the same payload name appeared across other devices. Using **DeviceProcessEvents** for the January 14 to January 16 window and filtering on command lines containing “Daniel,” I found `certutil` downloads pointing to an external host, indicating payload staging.
+<img width="1624" height="574" alt="image" src="https://github.com/user-attachments/assets/386b8725-215a-484f-a3aa-2037b42b9ade" />
 
-```kql
-DeviceFileEvents
-| where TimeGenerated between (datetime(2025-10-09) .. datetime(2025-10-16))
-| where DeviceName == "gab-intern-vm"
-| where InitiatingProcessParentFileName contains "runtimebroker.exe"
-| where FileName has_any ("zip")
-| project TimeGenerated, DeviceName, FileName, FolderPath, InitiatingProcessFileName
-| order by TimeGenerated asc
-```
 
-[IMAGE_PLACEHOLDER_STAGING]
-
-**Question:** Provide the full folder path value where the artifact was first dropped into.
+**Task:** Additional payloads were hosted externally.
+<br>
+**Question:** What domain was used for payload staging?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `C:\Users\Public\ReconArtifacts.zip`
+Answer: `sync.cloud-endpoint.net`
 
 </details>
 
 ---
 
-## 12. Outbound Transfer Attempt
-
-```kql
-DeviceNetworkEvents
-| where TimeGenerated between (datetime(2025-10-09) .. datetime(2025-10-16))
-| where DeviceName == "gab-intern-vm"
-| where InitiatingProcessParentFileName contains "runtimebroker.exe"
-| project TimeGenerated, DeviceName, RemoteIP, RemotePort, RemoteUrl, InitiatingProcessParentFileName
-| order by TimeGenerated desc
-```
-
-[IMAGE_PLACEHOLDER_OUTBOUND]
-
-**Question:** Provide the IP of the last unusual outbound connection.
-
-<details>
-<summary>Click to see answer</summary>
-
-Answer: `100.29.147.161`
-
-</details>
-
----
-
-## 13. Scheduled Re-Execution Persistence
-
+# SECTION 3: CREDENTIAL ACCESS
+Credentials are the keys to the kingdom. The attacker went after stored secrets on the compromised host - targeting local credential stores and using in-memory techniques to extract authentication material. Determine what was targeted, how it was stolen, and who was doing it.
+## 🚩9. Registry Targets
+With credential access suspected, I searched **DeviceProcessEvents** for `reg.exe` executions during the compromise window. Filtering on command lines containing `save` revealed registry export activity initiated by powershell.exe on AS-PC1.
 ```kql
 DeviceProcessEvents
-| where TimeGenerated between (datetime(2025-10-01) .. datetime(2025-10-15))
-| where DeviceName == "gab-intern-vm"
-| where InitiatingProcessParentFileName contains "runtimebroker.exe"
-| project TimeGenerated, DeviceName, FileName, FolderPath, ProcessCommandLine
-| order by TimeGenerated desc
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName =~ "as-pc1"
+| where FileName =~ "reg.exe"
+| where ProcessCommandLine has " save "
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessCommandLine
 ```
+<img width="1622" height="406" alt="image" src="https://github.com/user-attachments/assets/485256ff-fc2b-4acc-8e5c-68a411844ddf" />
 
-[IMAGE_PLACEHOLDER_SCHEDULER]
-
-**Question:** Provide the value of the task name down below.
+**Task:** The attacker targeted local credential stores.
+<br>
+**Question:** What two registry hives were targeted? 
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `SupportToolUpdater`
+Answer: `SAM, SYSTEM`
 
 </details>
 
 ---
 
-## 14. Autorun Fallback Persistence
+## 🚩10. Local Staging
+After identifying the registry hive exports, I reviewed the same `reg.exe save` command lines to determine where the data was saved. The **ProcessCommandLine** field clearly shows both SAM and SYSTEM hives being saved to a local directory.
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName =~ "as-pc1"
+| where FileName =~ "reg.exe"
+| where ProcessCommandLine has " save "
+| project TimeGenerated, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessCommandLine
+```
+<img width="1622" height="406" alt="image" src="https://github.com/user-attachments/assets/1413b578-381c-4ec0-a270-64eab4b51105" />
 
-[IMAGE_PLACEHOLDER_REGISTRY]
-
-**Question:** What was the name of the registry value?
+**Task:** Extracted data was saved locally before exfiltration.
+<br>
+**Question:** Where were the credential files saved?
 
 <details>
 <summary>Click to see answer</summary>
 
-Answer: `RemoteAssistUpdater`
+Answer: `C:\Users\Public\`
 
 </details>
 
 ---
 
-## 15. Planted Narrative / Cover Artifact
+## 🚩11. Execution Identity
+To determine the security context of the credential extraction, I projected `InitiatingProcessAccountName` and `AccountName` in the same `reg.exe save` query. The results show that both registry hive exports were executed under the compromised user session on AS-PC1.
+```kql
+DeviceProcessEvents
+| where TimeGenerated between (datetime(2026-01-13) .. datetime(2026-01-17))
+| where DeviceName =~ "as-pc1"
+| where FileName =~ "reg.exe"
+| where ProcessCommandLine has " save "
+| project TimeGenerated, DeviceName, ProcessCommandLine, InitiatingProcessAccountName, AccountName
+```
+<img width="1621" height="409" alt="image" src="https://github.com/user-attachments/assets/f961afa5-0172-4bce-8d34-50ba37fc8fd5" />
+
+
+**Task:** Credential extraction was performed under a specific user context.
+<br>
+**Question:** What user performed this action? 
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `sophie.turner`
+
+</details>
+
+---
+# SECTION 4: DISCOVERY
+Before moving deeper, the attacker needed to understand the environment. They ran
+commands to figure out who they were, what was around them, and what they could reach.
+Identify the reconnaissance activity and what intelligence the attacker gathered.
+
+## 🚩12. User Context
+After establishing access, the attacker began reconnaissance to confirm their execution context. Reviewing the MDE process timeline shows `whoami.exe` executed early in the sequence of commands.
+<br>
+<img width="879" height="865" alt="image" src="https://github.com/user-attachments/assets/684edf14-08fe-43fd-abe4-02b652744470" />
+<br>
+**Task:** The attacker confirmed their identity after initial access.
+<br>
+**Question:** What command was used?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `whoami.exe`
+
+</details>
+
+---
+
+## 🚩13. Network Enumeration
+After confirming identity with `whoami.exe`, the attacker moved into network reconnaissance. Reviewing the MDE process timeline shows `net.exe view` executed shortly after other enumeration commands, indicating an attempt to discover available computer domains and shared resources.
+<br>
+<img width="1278" height="855" alt="image" src="https://github.com/user-attachments/assets/5f24b07f-9382-4604-b835-2095f19f1fd9" />
+<br>
+
+**Task:** The attacker enumerated network resources.
+<br>
+**Question:** What command was used to view available shares?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `net.exe view`
+
+</details>
+
+---
+
+## 🚩14. Local Admins
+Continuing through the MDE process timeline, I observed `net.exe localgroup administrators` executed shortly after other enumeration commands. This indicates the attacker was checking membership of the local privileged group to assess escalation or lateral movement opportunities.
+<img width="900" height="846" alt="image" src="https://github.com/user-attachments/assets/a04e935d-e071-4ce2-bec5-85b99f1583bf" />
+
+**Task:** The attacker enumerated privileged local group membership.
+<br>
+**Question:** What group was queried?
+
+<details>
+<summary>Click to see answer</summary>
+
+Answer: `administrators`
+
+</details>
+
+---
+# SECTION 5: PERSISTENCE - REMOTE TOOL
+The attacker wasn't planning a short visit. Multiple mechanisms were deployed to ensure
+continued access - legitimate tools repurposed, tasks scheduled, accounts created. Map out
+every backdoor they left behind.
+## 🚩15. Planted Narrative / Cover Artifact
 
 ```kql
 DeviceFileEvents
